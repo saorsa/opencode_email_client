@@ -28,6 +28,7 @@ import imaplib
 import json
 import logging
 import os
+import re
 import queue
 import signal
 import smtplib
@@ -167,6 +168,10 @@ class StateDB:
 
 
 class OpenCodeClient:
+    # Sentinel returned for a successful (2xx) response with an empty body.
+    # Distinguishes "ok, no content" (204) from an actual failure (None).
+    EMPTY_OK = object()
+
     def __init__(self, server_url: str):
         self.base = server_url.rstrip("/")
 
@@ -179,7 +184,8 @@ class OpenCodeClient:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read().decode()
                 if not raw.strip():
-                    return None
+                    # 2xx with empty body (e.g. 204 No Content) is a success.
+                    return self.EMPTY_OK
                 try:
                     return json.loads(raw)
                 except json.JSONDecodeError:
@@ -215,10 +221,34 @@ class OpenCodeClient:
         return self._req("POST", f"/session/{session_id}/message", {"parts": [{"type": "text", "text": text}]})
 
     def send_message_async(self, session_id: str, text: str) -> dict | None:
-        return self._req("POST", f"/session/{session_id}/prompt_async", {"parts": [{"type": "text", "text": text}]})
+        result = self._req("POST", f"/session/{session_id}/prompt_async", {"parts": [{"type": "text", "text": text}]})
+        # prompt_async returns 204 No Content on success -> EMPTY_OK sentinel.
+        return None if result is None else (result if result is not self.EMPTY_OK else {})
 
     def send_command(self, session_id: str, command: str) -> dict | None:
         return self._req("POST", f"/session/{session_id}/command", {"command": command})
+
+    def get_last_output(self, session_id: str) -> str:
+        """Fetch the last assistant (task-complete) text for a session."""
+        try:
+            result = self._req("GET", f"/session/{session_id}/message?limit=10")
+            if not isinstance(result, list):
+                return ""
+            for entry in reversed(result):
+                info = entry.get("info", {}) if isinstance(entry, dict) else {}
+                if info.get("role") != "assistant":
+                    continue
+                parts = entry.get("parts", [])
+                text = "\n".join(
+                    p.get("text", "")
+                    for p in parts
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ).strip()
+                if text:
+                    return text
+        except Exception as e:
+            log.error("Failed to fetch last output for %s: %s", session_id, e)
+        return ""
 
     def get_events(self, session_id: str | None = None) -> urllib.request.Request:
         path = f"/session/{session_id}/event" if session_id else "/global/event"
@@ -294,6 +324,16 @@ class EmailMonitor:
             subject = msg.get("Subject", "")
             date_str = msg.get("Date", "")
 
+            # Only process reply emails (subject starting with "Re:") when
+            # only_replies is enabled. This is the resume/continue delivery path.
+            if self.cfg.get("only_replies", False) and not re.match(
+                r"^\s*re\s*:", subject, re.IGNORECASE
+            ):
+                log.info("Skipping non-reply email (only_replies enabled): %r", subject)
+                self.state.mark_email_processed(message_id, subject, "", "inbound")
+                self.conn.store(num, "+FLAGS", "\\Seen")
+                continue
+
             # Extract body
             body = ""
             if msg.is_multipart():
@@ -316,12 +356,16 @@ class EmailMonitor:
                 if clean_subject.startswith(":"):
                     clean_subject = clean_subject[1:].strip()
 
-            # Detect session ID from body or subject
+            # Detect session ID from body or subject.
+            # Strip email-quote markers ("> ", ">>", "| ") so replies that quote
+            # a "session: ses_xxx" line still resolve to the original session.
             session_id = None
+            session_re = re.compile(r"\bsession\s*:\s*(ses_\w+)", re.IGNORECASE)
             for line in (body + "\n" + subject).splitlines():
-                line = line.strip()
-                if line.startswith("session:"):
-                    session_id = line.split(":", 1)[1].strip()
+                stripped = re.sub(r"^\s*(?:>|\||\d+\s*>\s*)+", "", line).strip()
+                m = session_re.search(stripped)
+                if m:
+                    session_id = m.group(1)
                     break
 
             results.append(
@@ -512,16 +556,24 @@ class SSEMonitor:
 
         self.state.upsert_session(session_id, "", title, new_state)
 
-        # Notify based on state
-        if kind in ("session.completed", "session.idle") and notify_cfg.get("on_task_complete"):
-            self.sender.notify_task_complete(title, f"Session {kind}", session_id)
+        # Notify based on state.
+        # session.idle at termination doubles as task-complete; notify once,
+        # preferring on_task_complete to avoid sending both complete + idle emails.
+        last_output = self.client.get_last_output(session_id)
+        status_line = f"Status: {kind}"
+
+        if kind == "session.completed" and notify_cfg.get("on_task_complete"):
+            self.sender.notify_task_complete(title, last_output or status_line, session_id)
 
         elif kind == "session.error" and notify_cfg.get("on_error"):
             error_msg = data.get("properties", {}).get("message", "Unknown error")
             self.sender.notify_error(title, error_msg, session_id)
 
-        elif kind == "session.idle" and notify_cfg.get("on_idle"):
-            self.sender.notify_idle(title, "Session is idle and waiting for input.", session_id)
+        elif kind == "session.idle":
+            if notify_cfg.get("on_task_complete") and old_state not in ("session.completed", "session.idle"):
+                self.sender.notify_task_complete(title, last_output or status_line, session_id)
+            elif notify_cfg.get("on_idle"):
+                self.sender.notify_idle(title, last_output or "Session is idle and waiting for input.", session_id)
 
     def monitor_global(self):
         """Monitor global SSE events in a blocking loop."""
@@ -592,42 +644,113 @@ class Bridge:
             return
 
         if session_id:
-            # Continue existing session
-            log.info("Feeding email to session %s", session_id)
-            # Check if session exists
-            info = self.client.get_session(session_id)
-            if info:
-                # Prefix with email context
-                prompt = (
-                    f"[Email from {email_data.get('from', 'unknown')} at {email_data.get('date', '')}]\n"
-                    f"Subject: {email_data.get('raw_subject', '')}\n\n"
-                    f"{text}"
-                )
-                result = self.client.send_message_async(session_id, prompt)
-                if result is not None:
-                    log.info("Message sent to session %s", session_id)
-                    self.sender.send(
-                        self.config["notify"]["recipient_email"],
-                        f"[opencode] Fed to session: {session_id}",
-                        f"Your email instructions have been sent to session {session_id}.\nSession will process and notify you when complete.",
-                        in_reply_to=message_id,
-                        session_id=session_id,
-                    )
-                else:
-                    log.error("Failed to send message to session %s", session_id)
-                    self.sender.send(
-                        self.config["notify"]["recipient_email"],
-                        f"[opencode] Failed: session {session_id}",
-                        f"Could not deliver your instructions to session {session_id}. It may be busy or stopped.",
-                        in_reply_to=message_id,
-                        session_id=session_id,
-                    )
-            else:
-                log.warning("Session %s not found, creating new session", session_id)
-                self._create_session_from_email(email_data)
+            self._resume_session_from_email(session_id, email_data)
         else:
-            # No session specified - create new or continue last
+            # No session specified - create new
             self._create_session_from_email(email_data)
+
+    def _resume_session_from_email(self, session_id: str, email_data: dict):
+        """Resume an existing session headlessly via `opencode run -s`.
+
+        Runs the session as its own process against the shared SQLite store
+        (history is preserved, new turns land in the DB), so a standalone TUI
+        attached to the same store stays synced when it reloads the session.
+        """
+        message_id = email_data.get("message_id", "")
+        text = email_data.get("body") or email_data.get("subject", "")
+
+        info = self.client.get_session(session_id)
+        # `opencode run -s` resolves the session from the shared DB, so a
+        # transient HTTP failure (get_session -> None) need not block resume.
+        if info:
+            project_dir = info.get("directory") or self.config["opencode"].get("project_dir", ".")
+        else:
+            log.warning("Could not fetch session %s over HTTP, resuming via DB", session_id)
+            project_dir = self.config["opencode"].get("project_dir", ".")
+        prompt = (
+            f"[Email from {email_data.get('from', 'unknown')} at {email_data.get('date', '')}]\n"
+            f"Subject: {email_data.get('raw_subject', '')}\n\n"
+            f"{text}"
+        )
+
+        cmd = ["opencode", "run", "-s", session_id, "--dir", project_dir, "--format", "json"]
+        if self.config["opencode"].get("auto_approve"):
+            cmd.append("--auto")
+            log.info("auto_approve enabled: passing --auto to resume run")
+        cmd.append(prompt)
+        log.info("Resuming session %s via: %s ...", session_id, " ".join(cmd[:7]))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=project_dir,
+            )
+            output = self._extract_run_output(result)
+            log.info("Session %s resumed, exit code %d", session_id, result.returncode)
+
+            if result.returncode == 0:
+                self.sender.send(
+                    self.config["notify"]["recipient_email"],
+                    f"[opencode] Session complete: {session_id}",
+                    f"Your instructions have been processed in session {session_id}.\n"
+                    f"session: {session_id}\n"
+                    f"\n--- Output ---\n{output[: self.config['notify'].get('max_output_chars', 4000)]}\n"
+                    f"\n--- Reply to continue ---\n"
+                    f"Reply to this email with more instructions to continue.",
+                    in_reply_to=message_id,
+                    session_id=session_id,
+                )
+            else:
+                log.error("Session %s run failed (exit %d): %s", session_id, result.returncode, result.stderr[:300])
+                self.sender.send(
+                    self.config["notify"]["recipient_email"],
+                    f"[opencode] Error: session {session_id}",
+                    f"Session {session_id} exited with code {result.returncode}.\n"
+                    f"session: {session_id}\n"
+                    f"\n--- Error ---\n{result.stderr[:2000]}",
+                    in_reply_to=message_id,
+                    session_id=session_id,
+                )
+        except subprocess.TimeoutExpired:
+            log.error("Session %s resume timed out", session_id)
+            self.sender.send(
+                self.config["notify"]["recipient_email"],
+                f"[opencode] Timeout: session {session_id}",
+                f"Session {session_id} took too long.\nIt may still be running in the background.",
+                in_reply_to=message_id,
+                session_id=session_id,
+            )
+        except Exception as e:
+            log.error("Failed to resume session %s: %s", session_id, e)
+
+    @staticmethod
+    def _extract_run_output(result):
+        """Extract the final assistant text from `opencode run --format json` stdout.
+
+        The stream emits text-part events of the form:
+            {"type":"text","sessionID":...,"part":{"type":"text","text":...}}
+        We collect the last assistant text block.
+        """
+        texts: list[str] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("type") == "text":
+                part = data.get("part") or {}
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    texts.append(part["text"])
+        if texts:
+            return texts[-1].strip() or result.stdout.strip()[:4000]
+        return result.stdout.strip()[:4000]
+
 
     def _create_session_from_email(self, email_data: dict):
         """Create a new session from an email."""
@@ -638,20 +761,8 @@ class Bridge:
         session_id = self.client.create_session(title=title, project_dir=project_dir)
         if session_id:
             log.info("Created new session %s from email", session_id)
-            prompt = (
-                f"[Email from {email_data.get('from', 'unknown')} at {email_data.get('date', '')}]\n"
-                f"Subject: {email_data.get('raw_subject', '')}\n\n"
-                f"{text}"
-            )
-            self.client.send_message_async(session_id, prompt)
-            self.sender.send(
-                self.config["notify"]["recipient_email"],
-                f"[opencode] New session: {session_id}",
-                f"Created new session '{title}' with ID: {session_id}\n"
-                f"Your instructions are being processed.\nYou will be notified when complete.",
-                in_reply_to=email_data.get("message_id"),
-                session_id=session_id,
-            )
+            # Run it headlessly (writes history to the shared store) and email the output.
+            self._resume_session_from_email(session_id, email_data)
         else:
             log.error("Failed to create session")
             self.sender.send(

@@ -25,6 +25,7 @@ import imaplib
 import json
 import logging
 import os
+import re
 import smtplib
 import subprocess
 import sys
@@ -102,12 +103,16 @@ def poll_imap(config: dict) -> list[dict]:
             if prefix and subject.lower().startswith(prefix.lower()):
                 clean_subject = subject[len(prefix):].strip().lstrip(":")
 
-            # Check for session ID in body
+            # Check for session ID in body.
+            # Strip email-quote markers ("> ", ">>", "| ") so replies that quote
+            # a "session: ses_xxx" line still resolve to the original session.
             session_id = None
+            session_re = re.compile(r"\bsession\s*:\s*(ses_\w+)", re.IGNORECASE)
             for line in body.splitlines():
-                line = line.strip()
-                if line.startswith("session:"):
-                    session_id = line.split(":", 1)[1].strip()
+                stripped = re.sub(r"^\s*(?:>|\||\d+\s*>\s*)+", "", line).strip()
+                m = session_re.search(stripped)
+                if m:
+                    session_id = m.group(1)
                     break
 
             results.append({

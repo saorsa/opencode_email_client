@@ -106,3 +106,9 @@ See `config.example.json` for all options. Key settings:
 - `notify.*` - Which events trigger notifications
 - `opencode.*` - OpenCode server connection
 - `session.*` - Session management options
+
+## Credits
+
+Thanks to Big Pickle for the comprehensive review and fixes (session-continue
+resume, quoted reply parsing, plugin path, and task-complete output in emails).
+

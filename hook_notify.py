@@ -17,12 +17,18 @@ import sys
 import time
 from pathlib import Path
 
+_LOG_PATH = Path(__file__).parent / "bridge.log"
+
+# Log to the bridge log file only, never to stdout/stderr: the plugin invokes
+# this script from a TUI process, and anything we print would corrupt the UI.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stderr)],
+    filename=_LOG_PATH,
+    filemode="a",
 )
 log = logging.getLogger("hook-notify")
+log.propagate = False
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
@@ -78,21 +84,38 @@ def main():
 
     session_id = sys.argv[1] if len(sys.argv) > 1 else "unknown"
     session_title = sys.argv[2] if len(sys.argv) > 2 else "Unknown Task"
+    # Optional 3rd arg: path to a temp file containing the task output.
+    output_path = sys.argv[3] if len(sys.argv) > 3 else None
+
+    output = ""
+    if output_path:
+        try:
+            with open(output_path, encoding="utf-8", errors="replace") as f:
+                output = f.read().strip()
+        except OSError as e:
+            log.warning("Could not read output file %s: %s", output_path, e)
 
     recipient = notify_cfg.get("recipient_email")
     if not recipient:
         log.error("No recipient email configured")
         sys.exit(1)
 
+    truncated = output[: notify_cfg.get("max_output_chars", 4000)]
+    if len(output) > len(truncated):
+        truncated += "\n... (truncated)"
+
     subject = f"[opencode] Task Complete: {session_title}"
     body = (
         f"Session completed!\n\n"
         f"Title: {session_title}\n"
-        f"ID: {session_id}\n"
-        f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        f"To continue, reply with:\n"
-        f"Subject: [opencode] <your instructions>\n"
-        f"Body: session: {session_id}\n\n"
+        f"session: {session_id}\n"
+        f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if truncated:
+        body += f"\n--- Output ---\n{truncated}\n"
+    body += (
+        f"\n--- Reply to continue ---\n"
+        f"To continue, reply and the session will be reused automatically.\n"
         f"Then describe what you want next."
     )
 

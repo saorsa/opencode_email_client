@@ -15,7 +15,8 @@
     "use_ssl": true,
     "poll_interval_seconds": 30,
     "unread_only": true,
-    "subject_prefix": "[opencode]"
+    "subject_prefix": "[opencode]",
+    "only_replies": false
   },
   "smtp": {
     "host": "smtp.gmail.com",
