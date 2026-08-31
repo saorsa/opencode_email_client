@@ -172,14 +172,25 @@ class OpenCodeClient:
     # Distinguishes "ok, no content" (204) from an actual failure (None).
     EMPTY_OK = object()
 
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, username: str | None = None, password: str | None = None):
         self.base = server_url.rstrip("/")
+        self.username = username
+        self.password = password
+
+    def _auth_header(self) -> dict[str, str]:
+        if self.username:
+            import base64
+            token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
+            return {"Authorization": f"Basic {token}"}
+        return {}
 
     def _req(self, method: str, path: str, body: dict | None = None) -> dict | str | None:
         url = f"{self.base}{path}"
         data = json.dumps(body).encode() if body else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Content-Type", "application/json")
+        for k, v in self._auth_header().items():
+            req.add_header(k, v)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read().decode()
@@ -253,7 +264,10 @@ class OpenCodeClient:
     def get_events(self, session_id: str | None = None) -> urllib.request.Request:
         path = f"/session/{session_id}/event" if session_id else "/global/event"
         url = f"{self.base}{path}"
-        return urllib.request.Request(url)
+        req = urllib.request.Request(url)
+        for k, v in self._auth_header().items():
+            req.add_header(k, v)
+        return req
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +641,12 @@ class Bridge:
     def __init__(self, config: dict):
         self.config = config
         self.state = StateDB()
-        self.client = OpenCodeClient(config["opencode"]["server_url"])
+        oc = config["opencode"]
+        self.client = OpenCodeClient(
+            oc["server_url"],
+            oc.get("username"),
+            oc.get("password"),
+        )
         self.sender = EmailSender(config)
         self.monitor = SSEMonitor(self.client, self.state, self.sender, config)
         self.email_monitor: EmailMonitor | None = None
