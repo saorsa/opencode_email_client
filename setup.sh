@@ -43,27 +43,11 @@ echo "     sudo systemctl daemon-reload"
 echo "     sudo systemctl enable --now opencode-email-bridge@$(whoami)"
 echo ""
 
-echo "=== Mode 2: Hook-based (lightweight) ==="
+echo "=== Mode 2: Plugin-based (lightweight) ==="
 echo ""
 echo "  1. Edit config.json with your credentials"
-echo "  2. Add to your opencode.json under the right project:"
-echo ""
-cat <<'HOOKJSON'
-  "experimental": {
-    "hook": {
-      "session_completed": [
-        {
-          "command": [
-            "python3",
-            "/home/andrey/git/opencode-email-bridge/hook_notify.py",
-            "{session_id}",
-            "{session_title}"
-          ]
-        }
-      ]
-    }
-  }
-HOOKJSON
+echo "  2. Copy the plugin to your project's .opencode/plugins/ directory:"
+echo "     cp $BRIDGE_DIR/hook-notify-plugin.ts /path/to/your-project/.opencode/plugins/email-notify.ts"
 echo ""
 echo "  3. Add cron entry for IMAP polling:"
 echo "     Run: crontab -e"
@@ -93,7 +77,8 @@ echo "=== Files ==="
 echo ""
 echo "  config.json        - IMAP/SMTP/server configuration"
 echo "  bridge.py          - Main bridge (server mode)"
-echo "  hook_notify.py     - Hook callback for session completion"
+echo "  hook_notify.py     - Notification script called on session completion"
+echo "  hook-notify-plugin.ts - OpenCode plugin triggering hook_notify.py"
 echo "  hook_poll.py       - Lightweight cron-based IMAP poller"
 echo "  bridge_state.db    - State database (auto-created)"
 echo "  bridge.log         - Log file"

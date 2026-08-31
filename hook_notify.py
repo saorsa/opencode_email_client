@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 """
-hook_notify.py - Called by opencode's experimental hook system.
+hook_notify.py - Called by opencode-email-bridge plugin on session completion.
 
-This script is invoked by opencode when a session completes.
+This script is invoked by the email-notify plugin when a session completes.
 It sends an email notification with the session summary.
 
-Hook config in opencode.json:
-  "experimental": {
-    "hook": {
-      "session_completed": [
-        {"command": ["python3", "/path/to/hook_notify.py", "{session_id}", "{session_title}"]}
-      ]
-    }
-  }
+Plugin: .opencode/plugins/email-notify.ts
 """
 
 import email.mime.text
@@ -55,11 +48,18 @@ def send_email(config: dict, to: str, subject: str, body: str) -> bool:
     msg["Subject"] = subject
 
     try:
-        with smtplib.SMTP(smtp_cfg["host"], smtp_cfg.get("port", 587), timeout=30) as server:
-            if smtp_cfg.get("use_tls", True):
-                server.starttls()
-            server.login(smtp_cfg["username"], smtp_cfg["password"])
-            server.send_message(msg)
+        port = smtp_cfg.get("port", 587)
+        use_ssl = smtp_cfg.get("use_ssl", port == 465)
+        if use_ssl:
+            with smtplib.SMTP_SSL(smtp_cfg["host"], port, timeout=30) as server:
+                server.login(smtp_cfg["username"], smtp_cfg["password"])
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_cfg["host"], port, timeout=30) as server:
+                if smtp_cfg.get("use_tls", True):
+                    server.starttls()
+                server.login(smtp_cfg["username"], smtp_cfg["password"])
+                server.send_message(msg)
         log.info("Email sent: %s", subject)
         return True
     except Exception as e:

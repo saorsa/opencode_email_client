@@ -385,13 +385,19 @@ class EmailSender:
         try:
             host = self.smtp_cfg["host"]
             port = self.smtp_cfg.get("port", 587)
-            log.info("Sending email to %s via %s:%s", to, host, port)
+            use_ssl = self.smtp_cfg.get("use_ssl", port == 465)
+            log.info("Sending email to %s via %s:%s (ssl=%s)", to, host, port, use_ssl)
 
-            with smtplib.SMTP(host, port, timeout=30) as server:
-                if self.smtp_cfg.get("use_tls", True):
-                    server.starttls()
-                server.login(self.smtp_cfg["username"], self.smtp_cfg["password"])
-                server.send_message(msg)
+            if use_ssl:
+                with smtplib.SMTP_SSL(host, port, timeout=30) as server:
+                    server.login(self.smtp_cfg["username"], self.smtp_cfg["password"])
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=30) as server:
+                    if self.smtp_cfg.get("use_tls", True):
+                        server.starttls()
+                    server.login(self.smtp_cfg["username"], self.smtp_cfg["password"])
+                    server.send_message(msg)
 
             log.info("Email sent to %s", to)
             return True

@@ -23,6 +23,7 @@
     "username": "your-email@gmail.com",
     "password": "your-app-password",
     "use_tls": true,
+    "use_ssl": false,
     "from_address": "your-email@gmail.com"
   },
   "notify": {

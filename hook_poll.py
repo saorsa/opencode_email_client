@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """
-hook_poll.py - Lightweight hook-based mode.
+hook_poll.py - Lightweight plugin-based mode.
 
-Uses opencode's experimental hook system:
-  - session_completed hook triggers email notification
-  - Cron runs this script to poll IMAP and feed replies back via `opencode run -c`
+The opencode-email-bridge plugin (hook-notify-plugin.ts) triggers email
+notifications on session completion. Cron runs this script to poll IMAP and
+feed replies back via `opencode run -c`.
 
 Setup:
-  1. Add to your opencode.json:
-     "experimental": {
-       "hook": {
-         "session_completed": [
-           {"command": ["python3", "/path/to/hook_notify.py", "{session_id}", "{session_title}"]}
-         ]
-       }
-     }
+  1. Copy hook-notify-plugin.ts to your project's .opencode/plugins/ directory
+     to enable completion notifications.
 
   2. Add cron entry (every 2 minutes):
      */2 * * * * python3 /path/to/hook_poll.py poll >> /path/to/bridge.log 2>&1
@@ -183,11 +177,18 @@ def send_notification(config: dict, subject: str, body: str):
     msg["Subject"] = subject
 
     try:
-        with smtplib.SMTP(smtp_cfg["host"], smtp_cfg.get("port", 587), timeout=30) as server:
-            if smtp_cfg.get("use_tls", True):
-                server.starttls()
-            server.login(smtp_cfg["username"], smtp_cfg["password"])
-            server.send_message(msg)
+        port = smtp_cfg.get("port", 587)
+        use_ssl = smtp_cfg.get("use_ssl", port == 465)
+        if use_ssl:
+            with smtplib.SMTP_SSL(smtp_cfg["host"], port, timeout=30) as server:
+                server.login(smtp_cfg["username"], smtp_cfg["password"])
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_cfg["host"], port, timeout=30) as server:
+                if smtp_cfg.get("use_tls", True):
+                    server.starttls()
+                server.login(smtp_cfg["username"], smtp_cfg["password"])
+                server.send_message(msg)
         log.info("Notification sent: %s", subject)
     except Exception as e:
         log.error("Failed to send notification: %s", e)
