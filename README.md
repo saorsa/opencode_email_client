@@ -17,7 +17,7 @@ Email ↔ OpenCode bridge. Control opencode sessions via email.
 ## Quick start
 
 ```bash
-cd /home/andrey/git/opencode-email-bridge
+cd /xxx/opencode-email-bridge
 bash setup.sh
 
 # Edit config.json with your IMAP/SMTP credentials
@@ -57,7 +57,7 @@ Uses opencode's experimental hook system + cron for IMAP polling.
         {
           "command": [
             "python3",
-            "/home/andrey/git/opencode-email-bridge/hook_notify.py",
+            "/xxx/opencode-email-bridge/hook_notify.py",
             "{session_id}",
             "{session_title}"
           ]

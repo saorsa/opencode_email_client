@@ -1,0 +1,18 @@
+[Unit]
+Description=opencode-email-bridge daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/git/opencode-email-bridge
+ExecStart=/usr/bin/python3 /home/%i/git/opencode-email-bridge/bridge.py serve
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=OCBRIDGE_CONFIG=/home/%i/git/opencode-email-bridge/config.json
+
+[Install]
+WantedBy=multi-user.target

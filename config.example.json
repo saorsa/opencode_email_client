@@ -1,0 +1,41 @@
+{
+  "opencode": {
+    "server_url": "http://127.0.0.1:3000",
+    "project_dir": "/home/andrey/git/opencode",
+    "default_model": null,
+    "default_agent": null,
+    "auto_approve": false
+  },
+  "imap": {
+    "host": "imap.gmail.com",
+    "port": 993,
+    "username": "your-email@gmail.com",
+    "password": "your-app-password",
+    "folder": "INBOX",
+    "use_ssl": true,
+    "poll_interval_seconds": 30,
+    "unread_only": true,
+    "subject_prefix": "[opencode]"
+  },
+  "smtp": {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "username": "your-email@gmail.com",
+    "password": "your-app-password",
+    "use_tls": true,
+    "from_address": "your-email@gmail.com"
+  },
+  "notify": {
+    "on_task_complete": true,
+    "on_error": true,
+    "on_permission_needed": true,
+    "on_idle": true,
+    "recipient_email": "your-email@gmail.com",
+    "max_output_chars": 4000
+  },
+  "session": {
+    "auto_continue": true,
+    "idle_timeout_seconds": 600,
+    "max_concurrent_sessions": 3
+  }
+}
